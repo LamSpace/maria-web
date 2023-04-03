@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--Copyright 2023 the original author, Lam Tong-->
+
+<!--Licensed under the Apache License, Version 2.0 (the "License");-->
+<!--you may not use this file except in compliance with the License.-->
+<!--You may obtain a copy of the License at-->
+
+<!--      http://www.apache.org/licenses/LICENSE-2.0-->
+
+<!--Unless required by applicable law or agreed to in writing, software-->
+<!--distributed under the License is distributed on an "AS IS" BASIS,-->
+<!--WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.-->
+<!--See the License for the specific language governing permissions and-->
+<!--limitations under the License. -->
+
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.github.lamtong.maria.log.mapper.LogLoginMapper">
+
+    <resultMap id="BaseResultMap" type="io.github.lamtong.maria.domain.entity.LogLogin">
+        <id property="id" column="id" jdbcType="BIGINT"/>
+        <result property="username" column="username" jdbcType="VARCHAR"/>
+        <result property="loginTime" column="login_time" jdbcType="TIMESTAMP"/>
+        <result property="success" column="success" jdbcType="TINYINT"/>
+        <result property="exception" column="exception" jdbcType="VARCHAR"/>
+        <result property="ip" column="ip" jdbcType="VARCHAR"/>
+        <result property="browserName" column="browser_name" jdbcType="VARCHAR"/>
+        <result property="browserType" column="browser_type" jdbcType="VARCHAR"/>
+        <result property="browserVersion" column="browser_version" jdbcType="VARCHAR"/>
+        <result property="browserManufacturer" column="browser_manufacturer" jdbcType="VARCHAR"/>
+        <result property="osName" column="os_name" jdbcType="VARCHAR"/>
+        <result property="osManufacturer" column="os_manufacturer" jdbcType="VARCHAR"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id
+        ,username,login_time,
+        success,exception,ip,
+        browser_name,browser_type,browser_version,
+        browser_manufacturer,os_name,os_manufacturer
+    </sql>
+
+</mapper>

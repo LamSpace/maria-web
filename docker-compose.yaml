@@ -1,0 +1,442 @@
+#
+#    Copyright 2023 the original author, Lam Tong
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+
+version: "3"
+
+networks:
+  maria_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.13.0.0/16
+          gateway: 172.13.0.1
+
+# Todo: 将容器挂载的目录映射到自定义目录下，而不是 Docker 自己的数据卷目录下。
+
+services:
+  maria-web-mysql:
+    image: mysql:8.0.32
+    container_name: maria-web-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: maria123
+    ports:
+      - "3306:3306"
+      - "33060:33060"
+    restart: always
+    privileged: true
+    volumes:
+      - ../maria-data/mysql/maria_web:/var/lib/mysql
+    command:
+      --max_connections=1000
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_general_ci
+    healthcheck:
+      test: [ "CMD-SHELL", "mysqladmin -u root -pmaria123 ping -h localhost" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - maria_network
+  maria-web-redis:
+    image: redis:7.0.8
+    container_name: maria-web-redis
+    ports:
+      - "6379:6379"
+    restart: always
+    privileged: true
+    volumes:
+      - ../maria-data/redis/data:/data
+      - ./container-config/redis/redis.conf:/etc/redis/redis.conf
+    command: [ "redis-server", "/etc/redis/redis.conf" ]
+    networks:
+      - maria_network
+  maria-web-zookeeper:
+    image: zookeeper:3.8.1
+    container_name: maria-web-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOO_MY_ID: 1
+    restart: always
+    privileged: true
+    volumes:
+      - ./container-config/zookeeper/zoo.cfg:/apache-zookeeper-3.8.1-bin/conf/zoo.cfg
+    healthcheck:
+      test: [ "CMD-SHELL", "echo 'ruok' | curl -s telnet://localhost:2181 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - maria_network
+  maria-web-kafka:
+    image: ubuntu/kafka:3.1-22.04_edge
+    container_name: maria-web-kafka
+    ports:
+      - "9092:9092"
+      - "2182:2181"
+    environment:
+      TZ: UTC
+      ZOOKEEPER_HOST: maria-web-zookeeper
+      ZOOKEEPER_PORT: 2181
+    restart: always
+    volumes:
+      - ./container-config/kafka/server.properties:/opt/kafka/config/server.properties
+    healthcheck:
+      test: [ "CMD-SHELL", "ps -ef | grep kafka | grep -v grep || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-zookeeper:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-kafka-dashboard:
+    image: provectuslabs/kafka-ui:c8619268cd1e791b5d509371981cb0d9b0a80e99
+    container_name: maria-web-kafka-dashboard
+    ports:
+      - "13001:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: maria-kafka
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: maria-web-kafka:9092
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "ps -ef | grep java | grep -v grep || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-kafka:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-rocketmq-namesrv:
+    image: apache/rocketmq:4.9.4
+    container_name: maria-web-rocketmq-namesrv
+    ports:
+      - "9876:9876"
+    environment:
+      JAVA_OPT: "-server -Xms1g -Xmx1g -Xmn512m"
+    volumes:
+      - ../maria-data/rocketmq/namesrv/logs:/home/rocketmq/logs
+    restart: always
+    command: [ "sh", "mqnamesrv" ]
+    healthcheck:
+      test: [ "CMD-SHELL", "echo 'ruok' | curl -s telnet://localhost:9876 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - maria_network
+  maria-web-rocketmq-broker:
+    image: apache/rocketmq:4.9.4
+    container_name: maria-web-rocketmq-broker
+    ports:
+      - "10909:10909"
+      - "10911:10911"
+      - "10912:10912"
+    privileged: true
+    user: root
+    volumes:
+      - ../maria-data/rocketmq/broker/logs:/home/rocketmq/logs
+      - ../maria-data/rocketmq/broker/store:/home/rocketmq/store
+    environment:
+      NAMESRV_ADDR: "maria-web-rocketmq-namesrv:9876"
+      JAVA_OPT_EXT: "-server -Xms2g -Xmx2g"
+    command: [ "sh", "mqbroker", "-n", "maria-web-rocketmq-namesrv:9876", "autoCreateTopicEnable=true" ]
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "echo 'ruok' | curl -s telnet://localhost:10911 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-rocketmq-namesrv:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-rocketmq-dashboard:
+    image: apacherocketmq/rocketmq-dashboard:1.0.0
+    container_name: maria-web-rocketmq-dashboard
+    ports:
+      - "13002:8080"
+    environment:
+      JAVA_OPTS: "-Drocketmq.namesrv.addr=maria-web-rocketmq-namesrv:9876"
+    restart: always
+    depends_on:
+      maria-web-rocketmq-broker:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-service-init:
+    image: maria/maria-init:0.0.1
+    build:
+      context: maria-service-init
+      dockerfile: Dockerfile
+    container_name: maria-web-service-init
+    environment:
+      SERVER_PORT: 8080
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8080 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-mysql:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-nacos:
+    image: nacos/nacos-server:v2.2.0
+    container_name: maria-web-nacos
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    privileged: true
+    environment:
+      MODE: standalone
+      SPRING_DATASOURCE_PLATFORM: mysql
+      MYSQL_SERVICE_HOST: maria-web-mysql
+      MYSQL_SERVICE_PORT: 3306
+      MYSQL_SERVICE_DB_NAME: maria_nacos
+      MYSQL_SERVICE_USER: root
+      MYSQL_SERVICE_PASSWORD: maria123
+      MYSQL_DB_PARAM: useUnicode=true&characterEncoding=utf-8&useSSL=true&zeroDateTimeBehavior=convertToNull&serverTimezone=Asia/Shanghai
+      NACOS_APPLICATION_PORT: 8848
+      NACOS_AUTH_ENABLE: true
+      TZ: "Asia/Shanghai"
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8848 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-service-init:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-sentinel-dashboard:
+    image: bladex/sentinel-dashboard:1.8.0
+    container_name: maria-web-sentinel-dashboard
+    ports:
+      - "8858:8858"
+    privileged: true
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "ps -ef | grep sentinel1 | grep -v grep || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-nacos:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-zipkin:
+    image: maria/zipkin:2.24
+    build:
+      context: maria-zipkin
+      dockerfile: Dockerfile
+    container_name: maria-web-zipkin
+    ports:
+      - "9411:9411"
+    environment:
+      STORAGE_TYPE: mysql
+      MYSQL_HOST: maria-web-mysql
+      MYSQL_TCP_PORT: 3306
+      MYSQL_DB: maria_zipkin
+      MYSQL_USER: root
+      MYSQL_PASS: maria123
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "ps -ef | grep java | grep -v grep || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-nacos:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-service-ui:
+    image: maria/service-ui:0.0.1
+    build:
+      context: maria-ui
+      dockerfile: Dockerfile
+    container_name: maria-web-service-ui
+    ports:
+      - "80:80"
+    restart: always
+    volumes:
+      - ./container-config/nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      maria-web-service-gateway:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-service-dashboard:
+    image: maria/service-dashboard:0.0.1
+    build:
+      context: maria-service-dashboard
+      dockerfile: Dockerfile
+    container_name: maria-web-service-dashboard
+    environment:
+      SERVER_PORT: 8080
+    ports:
+      - "13000:8080"
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8080 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - maria_network
+  maria-web-service-gateway:
+    image: maria/service-gateway:0.0.1
+    build:
+      context: maria-service-gateway
+      dockerfile: Dockerfile
+    container_name: maria-web-service-gateway
+    environment:
+      SERVER_PORT: 8080
+    #      生产环境下需要关闭该端口
+    ports:
+      - "12000:8080"
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8080 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-service-dashboard:
+        condition: service_healthy
+      maria-web-nacos:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-service-authentication:
+    image: maria/service-authentication:0.0.1
+    build:
+      context: maria-service-authentication
+      dockerfile: Dockerfile
+    container_name: maria-web-service-authentication
+    environment:
+      SERVER_PORT: 8080
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8080 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-service-gateway:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-service-system:
+    image: maria/service-system:0.0.1
+    build:
+      context: maria-service-system
+      dockerfile: Dockerfile
+    container_name: maria-web-service-system
+    environment:
+      SERVER_PORT: 8080
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8080 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-service-gateway:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-service-socket:
+    image: maria/service-socket:0.0.1
+    build:
+      context: maria-service-socket
+      dockerfile: Dockerfile
+    container_name: maria-web-service-socket
+    environment:
+      SERVER_PORT: 8080
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8080 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-service-gateway:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-service-log:
+    image: maria/service-log:0.0.1
+    build:
+      context: maria-service-log
+      dockerfile: Dockerfile
+    container_name: maria-web-service-log
+    environment:
+      SERVER_PORT: 8080
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8080 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-service-gateway:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-service-job:
+    image: maria/service-job:0.0.1
+    build:
+      context: maria-service-job
+      dockerfile: Dockerfile
+    container_name: maria-web-service-job
+    environment:
+      SERVER_PORT: 8080
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s http://localhost:8080 || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      maria-web-service-gateway:
+        condition: service_healthy
+    networks:
+      - maria_network
+  maria-web-elasticjob-dashboard:
+    image: apache/shardingsphere-elasticjob-lite-ui:3.0.2
+    container_name: maria-web-elasticjob-dashboard
+    ports:
+      - "8088:8088"
+    restart: always
+    privileged: true
+    volumes:
+      - ./container-config/elastic-job-ui/application.properties:/opt/shardingsphere-elasticjob-lite-ui/conf/application.properties
+      - ./container-config/driver/mysql-connector-java-8.0.30.jar:/opt/shardingsphere-elasticjob-lite-ui/ext-lib/mysql-connector-java-8.0.30.jar
+    depends_on:
+      maria-web-service-job:
+        condition: service_healthy
+    networks:
+      - maria_network
